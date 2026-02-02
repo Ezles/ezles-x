@@ -1,1 +1,13 @@
-EXECUTE_THIS.lua
+# Local execution file (keep for personal use but don't commit)
+# EXECUTE_THIS.lua
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

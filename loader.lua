@@ -1,89 +1,56 @@
 --[[
-    MyHub Loader
-    Usage: loadstring(game:HttpGet("YOUR_RAW_URL"))()
+    Ezles-X BSS Loader
+    Bee Swarm Simulator Script
 
-    This is the entry point that users execute.
-    It handles environment detection, executor compatibility,
-    and loads the main hub script.
+    Usage:
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/Ezles/ezles-x/main/loader.lua"))()
 ]]
 
--- Environment Detection & Compatibility Layer
 local HttpGet = game.HttpGet or game.HttpGetAsync
-local request = request or http_request or syn and syn.request or http and http.request
 
--- Executor Detection
-local function getExecutor(): string
+local function getExecutor()
     if syn then return "Synapse X"
-    elseif SENTINEL_V2 then return "Sentinel"
     elseif Seliware then return "Seliware"
     elseif KRNL_LOADED then return "KRNL"
     elseif Delta then return "Delta"
     elseif Fluxus then return "Fluxus"
-    elseif is_sirhurt_closure then return "SirHurt"
     elseif getexecutorname then return getexecutorname()
     else return "Unknown"
     end
 end
 
--- Feature Support Check
-local function checkSupport(): {[string]: boolean}
-    return {
-        hookmetamethod = hookmetamethod ~= nil,
-        hookfunction = hookfunction ~= nil or replaceclosure ~= nil,
-        getrawmetatable = getrawmetatable ~= nil,
-        newcclosure = newcclosure ~= nil,
-        getconnections = getconnections ~= nil,
-        getgc = getgc ~= nil,
-        getupvalue = debug and debug.getupvalue ~= nil or getupvalue ~= nil,
-        Drawing = Drawing ~= nil,
-        firesignal = firesignal ~= nil,
-        fireproximityprompt = fireproximityprompt ~= nil,
-    }
-end
-
--- Notification System (works before UI loads)
-local function notify(title: string, text: string, duration: number?)
-    if Seliware and Seliware.Notify then
-        Seliware.Notify(title, text)
-    elseif game:GetService("StarterGui") then
+local function notify(title, text, duration)
+    pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
             Title = title,
             Text = text,
             Duration = duration or 5
         })
-    end
+    end)
 end
 
--- Main Loader Logic
+local placeId = game.PlaceId
+local BSS_PLACE_ID = 1537690962
+
+if placeId ~= BSS_PLACE_ID then
+    notify("Ezles-X BSS", "This script is only for Bee Swarm Simulator!", 5)
+    warn("[Ezles-X BSS] Wrong game! Expected BSS (1537690962), got: " .. placeId)
+    return
+end
+
 local executor = getExecutor()
-local support = checkSupport()
+notify("Ezles-X BSS", "Loading on " .. executor .. "...", 3)
 
-notify("MyHub", "Loading on " .. executor .. "...", 3)
+local MAIN_URL = "https://raw.githubusercontent.com/Ezles/ezles-x/main/main.lua"
 
--- Version Check
-local CURRENT_VERSION = "1.0.0"
-local success, versionData = pcall(function()
-    return game:HttpGet("YOUR_VERSION_CHECK_URL")
-end)
-
--- Load Main Hub
-local hubUrl = "YOUR_MAIN_HUB_RAW_URL"
 local success, result = pcall(function()
-    return loadstring(game:HttpGet(hubUrl))()
+    return loadstring(game:HttpGet(MAIN_URL))()
 end)
 
 if not success then
-    notify("MyHub Error", "Failed to load: " .. tostring(result), 10)
-    error("[MyHub] Load failed: " .. tostring(result))
-end
-
--- Pass environment info to the hub
-if result and type(result) == "table" and result.Init then
-    result.Init({
-        Executor = executor,
-        Support = support,
-        Version = CURRENT_VERSION
-    })
+    notify("Ezles-X BSS", "Failed to load: " .. tostring(result), 10)
+    warn("[Ezles-X BSS] Load failed: " .. tostring(result))
+    return
 end
 
 return result
