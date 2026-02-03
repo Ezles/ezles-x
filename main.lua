@@ -45,6 +45,14 @@ local Camera = Services.Workspace.CurrentCamera
 local State = {
     Connections = {},
     Loops = {},
+    FarmState = {
+        Running = false,
+        CurrentField = nil,
+        FieldZone = nil,
+        FlowerPositions = {},
+        LastTokenCollect = 0,
+        IsConverting = false,
+    },
     Settings = {
         AutoFarm = {
             Enabled = false,
@@ -53,6 +61,11 @@ local State = {
             ConvertAtHive = true,
             CollectTokens = true,
             AvoidMobs = false,
+            FarmMode = "Walk",
+            WalkSpeed = 50,
+            UseSprinklers = true,
+            SprinklerInterval = 30,
+            PatternMode = "Random",
         },
         AutoConvert = {
             Enabled = false,
@@ -269,7 +282,85 @@ end
 
 local BSS = {}
 
+local FieldNames = {
+    ["Sunflower"] = "Sunflower Field",
+    ["Dandelion"] = "Dandelion Field",
+    ["Mushroom"] = "Mushroom Field",
+    ["Blue Flower"] = "Blue Flower Field",
+    ["Clover"] = "Clover Field",
+    ["Spider"] = "Spider Field",
+    ["Strawberry"] = "Strawberry Field",
+    ["Bamboo"] = "Bamboo Field",
+    ["Pineapple"] = "Pineapple Patch",
+    ["Stump"] = "Stump Field",
+    ["Cactus"] = "Cactus Field",
+    ["Pumpkin"] = "Pumpkin Patch",
+    ["Pine Tree"] = "Pine Tree Forest",
+    ["Rose"] = "Rose Field",
+    ["Mountain Top"] = "Mountain Top Field",
+    ["Coconut"] = "Coconut Field",
+    ["Pepper"] = "Pepper Patch",
+}
+
+function BSS.GetFieldZone(fieldName)
+    local flowerZones = Services.Workspace:FindFirstChild("FlowerZones")
+    if not flowerZones then return nil end
+
+    local zoneName = FieldNames[fieldName] or fieldName .. " Field"
+    local zone = flowerZones:FindFirstChild(zoneName)
+
+    if not zone then
+        for _, child in pairs(flowerZones:GetChildren()) do
+            if child.Name:lower():find(fieldName:lower()) then
+                zone = child
+                break
+            end
+        end
+    end
+
+    return zone
+end
+
+function BSS.GetFieldBounds(fieldZone)
+    if not fieldZone or not fieldZone:IsA("BasePart") then return nil end
+
+    local pos = fieldZone.Position
+    local size = fieldZone.Size
+
+    return {
+        MinX = pos.X - (size.X / 2) + 5,
+        MaxX = pos.X + (size.X / 2) - 5,
+        MinZ = pos.Z - (size.Z / 2) + 5,
+        MaxZ = pos.Z + (size.Z / 2) - 5,
+        Y = pos.Y + 2,
+        Center = pos,
+        Size = size,
+    }
+end
+
+function BSS.GetRandomFieldPosition(fieldName)
+    local zone = BSS.GetFieldZone(fieldName)
+    if not zone then
+        return BSS.GetFieldPosition(fieldName)
+    end
+
+    local bounds = BSS.GetFieldBounds(zone)
+    if not bounds then
+        return BSS.GetFieldPosition(fieldName)
+    end
+
+    local randomX = math.random() * (bounds.MaxX - bounds.MinX) + bounds.MinX
+    local randomZ = math.random() * (bounds.MaxZ - bounds.MinZ) + bounds.MinZ
+
+    return CFrame.new(randomX, bounds.Y, randomZ)
+end
+
 function BSS.GetFieldPosition(fieldName)
+    local zone = BSS.GetFieldZone(fieldName)
+    if zone and zone:IsA("BasePart") then
+        return CFrame.new(zone.Position + Vector3.new(0, 2, 0))
+    end
+
     local fieldPositions = {
         ["Sunflower"] = CFrame.new(-177, 4, 76),
         ["Dandelion"] = CFrame.new(-248, 4, 178),
@@ -343,17 +434,24 @@ end
 
 function BSS.GetFlowers(fieldName)
     local flowers = {}
-    local flowerFolder = Services.Workspace:FindFirstChild("Flowers")
-    if not flowerFolder then
-        flowerFolder = Services.Workspace:FindFirstChild("FlowerZones")
-    end
+    local zone = BSS.GetFieldZone(fieldName)
+    local bounds = zone and BSS.GetFieldBounds(zone)
 
+    local flowerFolder = Services.Workspace:FindFirstChild("Flowers")
     if flowerFolder then
         for _, flower in pairs(flowerFolder:GetDescendants()) do
-            if flower:IsA("BasePart") and flower.Name:lower():find("flower") then
-                local fieldPos = BSS.GetFieldPosition(fieldName)
-                if fieldPos and Utilities.GetDistance(flower.Position, fieldPos.Position) < 60 then
-                    table.insert(flowers, flower)
+            if flower:IsA("BasePart") then
+                if bounds then
+                    local pos = flower.Position
+                    if pos.X >= bounds.MinX and pos.X <= bounds.MaxX and
+                       pos.Z >= bounds.MinZ and pos.Z <= bounds.MaxZ then
+                        table.insert(flowers, flower.Position)
+                    end
+                else
+                    local fieldPos = BSS.GetFieldPosition(fieldName)
+                    if fieldPos and Utilities.GetDistance(flower.Position, fieldPos.Position) < 60 then
+                        table.insert(flowers, flower.Position)
+                    end
                 end
             end
         end
@@ -362,9 +460,133 @@ function BSS.GetFlowers(fieldName)
     return flowers
 end
 
+function BSS.EquipBestCollector()
+    local humanoid = Utilities.GetHumanoid()
+    local character = Utilities.GetCharacter()
+    if not humanoid or not character then return nil end
+
+    local currentTool = character:FindFirstChildOfClass("Tool")
+    if currentTool then return currentTool end
+
+    local backpack = LocalPlayer.Backpack
+    local collectors = {}
+    local priority = {
+        ["Tide Popper"] = 10,
+        ["Gummy Baller"] = 9,
+        ["Dark Scythe"] = 8,
+        ["Petal Wand"] = 7,
+        ["Porcelain Dipper"] = 6,
+        ["Scythe"] = 5,
+        ["Bubble Wand"] = 4,
+        ["Pulsar"] = 3,
+        ["Vacuum"] = 2,
+        ["Collector"] = 1,
+        ["Scoop"] = 1,
+    }
+
+    for _, item in pairs(backpack:GetChildren()) do
+        if item:IsA("Tool") then
+            for name, prio in pairs(priority) do
+                if item.Name:find(name) then
+                    table.insert(collectors, {tool = item, priority = prio})
+                    break
+                end
+            end
+        end
+    end
+
+    table.sort(collectors, function(a, b) return a.priority > b.priority end)
+
+    if #collectors > 0 then
+        humanoid:EquipTool(collectors[1].tool)
+        task.wait(0.3)
+        return collectors[1].tool
+    end
+
+    return nil
+end
+
+function BSS.WalkToPosition(targetPos, timeout)
+    local humanoid = Utilities.GetHumanoid()
+    local rootPart = Utilities.GetRootPart()
+    if not humanoid or not rootPart then return false end
+
+    timeout = timeout or 10
+    local startTime = tick()
+
+    if typeof(targetPos) == "CFrame" then
+        targetPos = targetPos.Position
+    end
+
+    humanoid.AutoRotate = false
+
+    local speed = State.Settings.AutoFarm.WalkSpeed or 50
+    if State.Settings.Movement.SpeedEnabled then
+        humanoid.WalkSpeed = State.Settings.Movement.SpeedValue
+    else
+        humanoid.WalkSpeed = math.min(speed, 70)
+    end
+
+    humanoid:MoveTo(targetPos)
+
+    local reached = false
+    local moveConn
+    moveConn = humanoid.MoveToFinished:Connect(function(success)
+        reached = success
+    end)
+
+    while not reached and (tick() - startTime) < timeout do
+        if not State.Settings.AutoFarm.Enabled then
+            moveConn:Disconnect()
+            humanoid.AutoRotate = true
+            return false
+        end
+
+        local dist = Utilities.GetDistance(rootPart.Position, targetPos)
+        if dist <= 5 then
+            reached = true
+            break
+        end
+
+        humanoid:MoveTo(targetPos)
+        task.wait(0.1)
+    end
+
+    moveConn:Disconnect()
+    humanoid.AutoRotate = true
+    return reached
+end
+
+function BSS.UseSprinkler()
+    local events = Services.ReplicatedStorage:FindFirstChild("Events")
+    if events then
+        local playerActives = events:FindFirstChild("PlayerActivesCommand")
+        if playerActives then
+            pcall(function()
+                playerActives:FireServer({["Name"] = "Sprinkler Builder"})
+            end)
+            return true
+        end
+    end
+    return false
+end
+
+function BSS.UseGlider()
+    local events = Services.ReplicatedStorage:FindFirstChild("Events")
+    if events then
+        local playerActives = events:FindFirstChild("PlayerActivesCommand")
+        if playerActives then
+            pcall(function()
+                playerActives:FireServer({["Name"] = "Glider"})
+            end)
+            return true
+        end
+    end
+    return false
+end
+
 function BSS.CollectPollen(fieldName)
-    local fieldPos = BSS.GetFieldPosition(fieldName)
-    if not fieldPos then return end
+    if State.FarmState.IsConverting then return end
 
     local rootPart = Utilities.GetRootPart()
     if not rootPart then return end
@@ -372,32 +594,61 @@ function BSS.CollectPollen(fieldName)
     local humanoid = Utilities.GetHumanoid()
     if not humanoid then return end
 
-    local character = Utilities.GetCharacter()
-    local tool = character:FindFirstChildOfClass("Tool")
-
+    local tool = BSS.EquipBestCollector()
     if not tool then
-        local backpack = LocalPlayer.Backpack
-        for _, item in pairs(backpack:GetChildren()) do
-            if item:IsA("Tool") and (item.Name:find("Collector") or item.Name:find("Scoop") or item.Name:find("Vacuum") or item.Name:find("Tide") or item.Name:find("Gummy") or item.Name:find("Porcelain")) then
-                humanoid:EquipTool(item)
-                tool = item
-                task.wait(0.5)
-                break
-            end
-        end
+        Utilities.Notify("Auto Farm", "No collector found!", 3)
+        return
     end
 
-    if tool then
-        local offset = Vector3.new(math.random(-10, 10), 0, math.random(-10, 10))
-        local targetPos = fieldPos.Position + offset
-        rootPart.CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
+    local targetPos = BSS.GetRandomFieldPosition(fieldName)
+    if not targetPos then return end
 
+    local farmMode = State.Settings.AutoFarm.FarmMode
+
+    if farmMode == "Walk" then
+        local distance = Utilities.GetDistance(rootPart.Position, targetPos.Position)
+
+        if distance > 100 then
+            rootPart.CFrame = targetPos
+            task.wait(0.2)
+        else
+            BSS.WalkToPosition(targetPos, 5)
+        end
+    else
+        rootPart.CFrame = targetPos
+    end
+
+    if tool and tool.Activate then
         tool:Activate()
+    end
 
-        if State.Settings.AutoFarm.CollectTokens then
-            BSS.CollectNearbyTokens()
+    if State.Settings.AutoFarm.UseSprinklers then
+        local now = tick()
+        if not State.FarmState.LastSprinkler or (now - State.FarmState.LastSprinkler) >= State.Settings.AutoFarm.SprinklerInterval then
+            BSS.UseSprinkler()
+            State.FarmState.LastSprinkler = now
         end
     end
+
+    if State.Settings.AutoFarm.CollectTokens then
+        local now = tick()
+        if (now - State.FarmState.LastTokenCollect) >= 2 then
+            BSS.CollectNearbyTokens()
+            State.FarmState.LastTokenCollect = now
+        end
+    end
+end
+
+function BSS.IsTokenValid(token)
+    if not token then return false end
+    if not token.Parent then return false end
+
+    if token:IsA("Model") then
+        local root = token.PrimaryPart or token:FindFirstChild("Root") or token:FindFirstChildWhichIsA("BasePart")
+        if not root then return false end
+    end
+
+    return true
 end
 
 function BSS.CollectNearbyTokens()
@@ -405,30 +656,78 @@ function BSS.CollectNearbyTokens()
     if not rootPart then return end
 
     local tokenFolder = Services.Workspace:FindFirstChild("Collectibles")
+    if not tokenFolder then
+        tokenFolder = Services.Workspace:FindFirstChild("Particles")
+    end
     if not tokenFolder then return end
 
     local radius = State.Settings.AutoTokens.CollectRadius
-    local originalPos = rootPart.CFrame
+    local farmMode = State.Settings.AutoFarm.FarmMode
+    local tokens = {}
 
     for _, token in pairs(tokenFolder:GetChildren()) do
-        if token:IsA("BasePart") or token:IsA("Model") then
-            local tokenPos = token:IsA("Model") and token.PrimaryPart and token.PrimaryPart.Position or token.Position
-            if tokenPos and Utilities.GetDistance(rootPart.Position, tokenPos) <= radius then
-                rootPart.CFrame = CFrame.new(tokenPos)
-                task.wait(0.05)
+        if BSS.IsTokenValid(token) then
+            local tokenPos
+            if token:IsA("Model") then
+                local root = token.PrimaryPart or token:FindFirstChildWhichIsA("BasePart")
+                tokenPos = root and root.Position
+            elseif token:IsA("BasePart") then
+                tokenPos = token.Position
+            end
+
+            if tokenPos then
+                local dist = Utilities.GetDistance(rootPart.Position, tokenPos)
+                if dist <= radius then
+                    table.insert(tokens, {pos = tokenPos, dist = dist, obj = token})
+                end
             end
         end
     end
 
-    rootPart.CFrame = originalPos
+    table.sort(tokens, function(a, b) return a.dist < b.dist end)
+
+    local collected = 0
+    local maxCollect = 5
+
+    for _, tokenData in ipairs(tokens) do
+        if collected >= maxCollect then break end
+        if not State.Settings.AutoFarm.Enabled then break end
+
+        if BSS.IsTokenValid(tokenData.obj) then
+            if farmMode == "Walk" then
+                local dist = Utilities.GetDistance(rootPart.Position, tokenData.pos)
+                if dist <= 15 then
+                    BSS.WalkToPosition(tokenData.pos, 2)
+                else
+                    rootPart.CFrame = CFrame.new(tokenData.pos)
+                    task.wait(0.05)
+                end
+            else
+                rootPart.CFrame = CFrame.new(tokenData.pos)
+                task.wait(0.05)
+            end
+            collected = collected + 1
+        end
+    end
 end
 
 function BSS.ConvertAtHive()
+    if State.FarmState.IsConverting then return end
+    State.FarmState.IsConverting = true
+
     local hivePos = BSS.GetHivePosition()
-    if not hivePos then return end
+    if not hivePos then
+        State.FarmState.IsConverting = false
+        return
+    end
 
     local rootPart = Utilities.GetRootPart()
-    if not rootPart then return end
+    if not rootPart then
+        State.FarmState.IsConverting = false
+        return
+    end
+
+    Utilities.Notify("Auto Farm", "Converting pollen...", 2)
 
     local humanoid = Utilities.GetHumanoid()
     if humanoid then
@@ -439,23 +738,43 @@ function BSS.ConvertAtHive()
         end
     end
 
-    rootPart.CFrame = hivePos * CFrame.new(0, 5, 0)
+    local farmMode = State.Settings.AutoFarm.FarmMode
+    local distance = Utilities.GetDistance(rootPart.Position, hivePos.Position)
 
-    local startTime = tick()
-    local timeout = 60
-
-    while BSS.GetPollenCount() > 0 and (tick() - startTime) < timeout do
+    if farmMode == "Walk" and distance <= 150 then
+        BSS.WalkToPosition(hivePos * CFrame.new(0, 5, 0), 15)
+    else
         rootPart.CFrame = hivePos * CFrame.new(0, 5, 0)
-        task.wait(0.5)
     end
 
-    Utilities.Notify("Ezles-X BSS", "Conversion complete!", 2)
+    local startTime = tick()
+    local timeout = 120
+
+    while BSS.GetPollenCount() > 0 and (tick() - startTime) < timeout do
+        if not State.Settings.AutoFarm.Enabled then break end
+
+        rootPart.CFrame = hivePos * CFrame.new(0, 5, 0)
+
+        if humanoid then
+            humanoid:MoveTo(rootPart.Position)
+        end
+
+        task.wait(0.3)
+    end
+
+    Utilities.Notify("Auto Farm", "Conversion complete!", 2)
+    State.FarmState.IsConverting = false
 end
 
 function BSS.StartAutoFarm()
-    StartLoop("AutoFarm", 0.3, function()
+    State.FarmState.Running = true
+    State.FarmState.LastTokenCollect = 0
+    State.FarmState.LastSprinkler = 0
+
+    StartLoop("AutoFarm", 0.5, function()
         if not State.Settings.AutoFarm.Enabled then return end
         if not Utilities.IsAlive() then return end
+        if State.FarmState.IsConverting then return end
 
         if State.Settings.AutoFarm.ReturnWhenFull and BSS.IsBackpackFull() then
             if State.Settings.AutoFarm.ConvertAtHive then
@@ -465,10 +784,27 @@ function BSS.StartAutoFarm()
             BSS.CollectPollen(State.Settings.AutoFarm.Field)
         end
     end)
+
+    StartLoop("AutoFarmTokens", 3, function()
+        if not State.Settings.AutoFarm.Enabled then return end
+        if not State.Settings.AutoFarm.CollectTokens then return end
+        if State.FarmState.IsConverting then return end
+
+        BSS.CollectNearbyTokens()
+    end)
 end
 
 function BSS.StopAutoFarm()
+    State.FarmState.Running = false
+    State.FarmState.IsConverting = false
     StopLoop("AutoFarm")
+    StopLoop("AutoFarmTokens")
+
+    local humanoid = Utilities.GetHumanoid()
+    if humanoid then
+        humanoid.WalkSpeed = 16
+        humanoid.AutoRotate = true
+    end
 end
 
 function BSS.StartAutoConvert()
@@ -1005,6 +1341,49 @@ FarmTab:CreateToggle({
     end,
 })
 
+FarmTab:CreateSection("Farm Mode")
+
+FarmTab:CreateDropdown({
+    Name = "Movement Mode",
+    Options = {"Walk", "Teleport"},
+    CurrentOption = {"Walk"},
+    Flag = "FarmMode",
+    Callback = function(options)
+        State.Settings.AutoFarm.FarmMode = options[1]
+    end,
+})
+
+FarmTab:CreateSlider({
+    Name = "Walk Speed (for Walk mode)",
+    Range = {16, 100},
+    Increment = 2,
+    CurrentValue = 50,
+    Flag = "FarmWalkSpeed",
+    Callback = function(value)
+        State.Settings.AutoFarm.WalkSpeed = value
+    end,
+})
+
+FarmTab:CreateToggle({
+    Name = "Auto Use Sprinklers",
+    CurrentValue = true,
+    Flag = "UseSprinklers",
+    Callback = function(value)
+        State.Settings.AutoFarm.UseSprinklers = value
+    end,
+})
+
+FarmTab:CreateSlider({
+    Name = "Sprinkler Interval (seconds)",
+    Range = {10, 120},
+    Increment = 5,
+    CurrentValue = 30,
+    Flag = "SprinklerInterval",
+    Callback = function(value)
+        State.Settings.AutoFarm.SprinklerInterval = value
+    end,
+})
+
 FarmTab:CreateSection("Auto Convert")
 
 FarmTab:CreateToggle({
@@ -1490,7 +1869,7 @@ SettingsTab:CreateButton({
     end,
 })
 
-SettingsTab:CreateLabel("Ezles-X BSS v1.0.0")
+SettingsTab:CreateLabel("Ezles-X BSS v2.0.0")
 SettingsTab:CreateLabel("Made for Bee Swarm Simulator")
 SettingsTab:CreateParagraph({
     Title = "Credits",
